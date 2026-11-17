@@ -161,13 +161,14 @@ int ObExprAIRerank::eval_ai_rerank(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &
     } 
 
     if (OB_FAIL(ret)) {
-    } else if (OB_NOT_NULL(arg_doc_key)) {
-      ObString doc_key = arg_doc_key->get_string();
-      if (OB_FAIL(eval_ai_rerank_with_doc_key(expr, ctx, temp_allocator, model_id,
-                  query, document_array, doc_key, *info, *endpoint_info, res))) {
-      }
     } else {
-      if (OB_ISNULL(info)) {
+      ObIJsonBase *original_documents = document_array;
+      if (OB_NOT_NULL(arg_doc_key)) {
+        ObString doc_key = arg_doc_key->get_string();
+        ret = get_doc_array_from_documents_array_with_key(temp_allocator, original_documents, doc_key, document_array);
+      }
+      if (OB_FAIL(ret)) {
+      } else if (OB_ISNULL(info)) {
         ret = OB_ERR_UNEXPECTED;
       } else if (OB_FAIL(ObAIFuncUtils::check_info_type_rerank(info))) {
       } else if (OB_FAIL(ObAIFuncUtils::get_header(temp_allocator, *info, *endpoint_info, header_array))) {
@@ -192,6 +193,13 @@ int ObExprAIRerank::eval_ai_rerank(const ObExpr &expr, ObEvalCtx &ctx, ObDatum &
           } else {
             result_array = compact_array;
           }
+        }
+      }
+      if (OB_SUCC(ret) && OB_NOT_NULL(arg_doc_key)) {
+        ObIJsonBase *mapped = nullptr;
+        if (OB_FAIL(sort_document_array_by_model_result(temp_allocator, original_documents, result_array, mapped))) {
+        } else {
+          result_array = mapped;
         }
       }
       if (OB_SUCC(ret)) {
@@ -346,22 +354,8 @@ int ObExprAIRerank::inner_eval_ai_rerank(ObIAllocator &allocator,
                                           ObIJsonBase *&result_array)
 {
   INIT_SUCC(ret);
-  ObIJsonBase *res = nullptr;
-  ObIJsonBase *config_json = nullptr;
-  ObIJsonBase *body = nullptr;
-  ObIJsonBase *http_response = nullptr;
-  ObIJsonBase *response = nullptr;
-  ObAIFuncClient ai_client;
-  if (OB_FAIL(ObAIFuncUtils::get_rerank_body(allocator, info, endpoint_info, query, document_array, config_json, body))) {
-  } else if (OB_FAIL(ai_client.send_post(allocator, endpoint_info.get_url(), header_array, body, http_response))) {
-  } else if (OB_FAIL(ObAIFuncUtils::parse_rerank_output(allocator, endpoint_info, http_response, response))) {
-  } else if (response->json_type() != ObJsonNodeType::J_ARRAY) {
-    ret = OB_ERR_UNEXPECTED;
-  } else if (OB_ISNULL(res = response)) {
-    ret = OB_ERR_UNEXPECTED;
-  } else {
-    result_array = res;
-  }
+  ObAIFuncModel model(allocator, info, endpoint_info);
+  ret = model.call_rerank(query, document_array, result_array);
   return ret;
 }
 
@@ -414,7 +408,12 @@ int ObExprAIRerank::compact_json_array_by_key(ObIAllocator &allocator, ObIJsonBa
         if (OB_ISNULL(double1) || OB_ISNULL(double2)) {
           ret = OB_ERR_UNEXPECTED;
         } else {
-          if (double1->get_double() > double2->get_double()) {
+          share::ObJsonReaderHelper reader(allocator);
+          float score1 = 0;
+          float score2 = 0;
+          if (OB_FAIL(reader.get_float_value(double1, score1))) {
+          } else if (OB_FAIL(reader.get_float_value(double2, score2))) {
+          } else if (score1 >= score2) {
             if (OB_FAIL(ObAIFuncJsonUtils::append_value(allocator, builder, obj1))) {
             }
             i++;
